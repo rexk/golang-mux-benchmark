@@ -3,7 +3,8 @@ package mux_bench_test
 import (
 	"crypto/sha1"
 	"fmt"
-	"github.com/codegangsta/martini"
+	"github.com/codegangsta/negroni"
+	"github.com/go-martini/martini"
 	"github.com/gocraft/web"
 	"github.com/gorilla/mux"
 	"github.com/pilu/traffic"
@@ -284,6 +285,124 @@ func BenchmarkCodegangstaMartini_Middleware(b *testing.B) {
 }
 
 func BenchmarkCodegangstaMartini_Composite(b *testing.B) {
+	namespaces, resources, requests := resourceSetup(10)
+
+	martiniMiddleware := func(rw http.ResponseWriter, r *http.Request, c martini.Context) {
+		c.Next()
+	}
+
+	handler := func(rw http.ResponseWriter, r *http.Request, c *martiniContext) {
+		fmt.Fprintf(rw, c.MyField)
+	}
+
+	r := martini.NewRouter()
+	m := martini.New()
+	m.Use(func(rw http.ResponseWriter, r *http.Request, c martini.Context) {
+		c.Map(&martiniContext{MyField: r.URL.Path})
+		c.Next()
+	})
+	m.Use(martiniMiddleware)
+	m.Use(martiniMiddleware)
+	m.Use(martiniMiddleware)
+	m.Use(martiniMiddleware)
+	m.Use(martiniMiddleware)
+	m.Action(r.Handle)
+
+	for _, ns := range namespaces {
+		for _, res := range resources {
+			r.Get("/"+ns+"/"+res, handler)
+			r.Post("/"+ns+"/"+res, handler)
+			r.Get("/"+ns+"/"+res+"/:id", handler)
+			r.Put("/"+ns+"/"+res+"/:id", handler)
+			r.Delete("/"+ns+"/"+res+"/:id", handler)
+		}
+	}
+	benchmarkRoutes(b, m, requests)
+}
+
+//
+// Benchmarks for codegangsta/negroni with gorilla/mux:
+//
+func codegangstaNegroniRouterFor(namespaces []string, resources []string) http.Handler {
+	router := mux.NewRouter()
+	n := negroni.New()
+	n.UseHandler(router)
+	for _, ns := range namespaces {
+		for _, res := range resources {
+			router.HandleFunc("/"+ns+"/"+res, helloHandler).Methods("GET")
+			router.HandleFunc("/"+ns+"/"+res, helloHandler).Methods("POST")
+			router.HandleFunc("/"+ns+"/"+res+"/:id", helloHandler).Methods("GET")
+			router.HandleFunc("/"+ns+"/"+res+"/:id", helloHandler).Methods("PUT")
+			router.HandleFunc("/"+ns+"/"+res+"/:id", helloHandler).Methods("DELETE")
+		}
+	}
+	return n
+}
+
+func BenchmarkCodegangstaNegroni_Simple(b *testing.B) {
+	r := mux.NewRouter()
+	m := negroni.New()
+	m.UseHandler(r)
+
+	r.HandleFunc("/action", helloHandler).Methods("GET")
+
+	rw, req := testRequest("GET", "/action")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.ServeHTTP(rw, req)
+	}
+}
+
+func BenchmarkCodegangstaNegroni_Route15(b *testing.B) {
+	benchmarkRoutesN(b, 1, codegangstaNegroniRouterFor)
+}
+
+func BenchmarkCodegangstaNegroni_Route75(b *testing.B) {
+	benchmarkRoutesN(b, 5, codegangstaNegroniRouterFor)
+}
+
+func BenchmarkCodegangstaNegroni_Route150(b *testing.B) {
+	benchmarkRoutesN(b, 10, codegangstaNegroniRouterFor)
+}
+
+func BenchmarkCodegangstaNegroni_Route300(b *testing.B) {
+	benchmarkRoutesN(b, 20, codegangstaNegroniRouterFor)
+}
+
+func BenchmarkCodegangstaNegroni_Route3000(b *testing.B) {
+	benchmarkRoutesN(b, 200, codegangstaNegroniRouterFor)
+}
+
+func BenchmarkCodegangstaNegroni_Middleware(b *testing.B) {
+	negroniMiddleware := negroni.HandlerFunc(func(rw http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+		next(rw, r)
+	})
+
+	r := mux.NewRouter()
+	m := negroni.New()
+	m.Use(negroniMiddleware)
+	m.Use(negroniMiddleware)
+	m.Use(negroniMiddleware)
+	m.Use(negroniMiddleware)
+	m.Use(negroniMiddleware)
+	m.Use(negroniMiddleware)
+	m.UseHandler(r)
+
+	r.HandleFunc("/action", helloHandler).Methods("GET")
+
+	rw, req := testRequest("GET", "/action")
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.ServeHTTP(rw, req)
+		if rw.Code != 200 {
+			panic("no good")
+		}
+	}
+}
+
+func BenchmarkCodegangstaNegroni_Composite(b *testing.B) {
 	namespaces, resources, requests := resourceSetup(10)
 
 	martiniMiddleware := func(rw http.ResponseWriter, r *http.Request, c martini.Context) {
